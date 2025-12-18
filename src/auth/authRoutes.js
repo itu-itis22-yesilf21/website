@@ -35,34 +35,57 @@ function validatePassword(password) {
 }
 
 authRouter.post('/register', async (req, res) => {
-  const { username, password, role: requestedRole } = req.body || {}
+  const { username, email, password, role: requestedRole } = req.body || {}
+  const role = allowedRegistrationRoles.includes((requestedRole || '').toLowerCase())
+    ? requestedRole.toLowerCase()
+    : 'player'
+
+  // Guest accounts don't need email
+  const isGuest = role === 'guest'
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' })
+  }
+
+  if (!isGuest && !email) {
+    return res.status(400).json({ error: 'Email is required for registration' })
+  }
+
+  // Validate email format (only for non-guest accounts)
+  if (!isGuest) {
+    const emailRegex = /^\S+@\S+\.\S+$/
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address' })
+    }
   }
 
   if (await UserStore.hasUser(username)) {
     return res.status(400).json({ error: 'Username is already registered' })
   }
 
-  // Validate password requirements
-  const passwordError = validatePassword(password)
-  if (passwordError) {
-    return res.status(400).json({ error: passwordError })
+  if (!isGuest && await UserStore.hasEmail(email)) {
+    return res.status(400).json({ error: 'Email is already registered' })
+  }
+
+  // Validate password requirements (only for non-guest accounts)
+  if (!isGuest) {
+    const passwordError = validatePassword(password)
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError })
+    }
   }
 
   const passwordHash = await bcrypt.hash(password, 10)
   try {
-    const role = allowedRegistrationRoles.includes((requestedRole || '').toLowerCase())
-      ? requestedRole.toLowerCase()
-      : 'player'
-
-    await UserStore.addUser(username, passwordHash, role)
+    // Create user - all users are automatically verified (no email verification required)
+    await UserStore.addUser(username, isGuest ? null : email, passwordHash, role, null)
+    
+    // Generate token and return immediately for all users
     const token = generateToken({ username, role })
-    res.json({ username, role, token })
+    return res.json({ username, role, token, emailVerified: true })
   } catch (error) {
-    if (error.message === 'Username already exists') {
-      return res.status(400).json({ error: 'Username is already registered' })
+    if (error.message === 'Username already exists' || error.message === 'Email already registered' || error.message.includes('already exists')) {
+      return res.status(400).json({ error: error.message })
     }
     console.error('Registration error:', error)
     res.status(500).json({ error: 'Failed to register user' })
@@ -87,7 +110,7 @@ authRouter.post('/login', async (req, res) => {
   }
 
   const token = generateToken({ username: user.username, role: user.role })
-  res.json({ username: user.username, role: user.role, token })
+  res.json({ username: user.username, role: user.role, token, emailVerified: true })
 })
 
 authRouter.get('/me', requireAuth, async (req, res) => {
@@ -176,6 +199,8 @@ authRouter.delete('/account', requireAuth, async (req, res) => {
   
   res.json({ message: 'Account deleted successfully' })
 })
+
+// Email verification endpoints removed - emails are automatically verified on registration
 
 module.exports = authRouter
 
